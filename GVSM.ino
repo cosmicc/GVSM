@@ -50,8 +50,31 @@
 
 // *************** ENUMS ******************
 
-enum PowerState {OFF, BATTERY, ALTERNATOR, INIT};
+typedef enum {OFF, BATTERY, ALTERNATOR, INIT} PowerState;
 
+// ************* STRUCTS ***************
+
+typedef struct {
+  double Hdop;                     // GPS Hdop (Horizontal Dilution of precision)
+  double Altitude;                 // GPS Altitude
+  double Heading;                  // GPS Heading
+  double Speed;                    // GPS Velocity
+  double Distance;                 // GPS Distance to Home
+  double Lat;                      // GPS Latitude
+  double Lon;                      // GPS Longitude
+  short Sats;                      // GPS Active Sattelites
+  bool Fix = false;                // GPS fix status
+  bool Debug = false;              // GPS Debug Output
+  int TimeOffset;                  // Difference between GPS and RTC time in seconds
+} Gps;
+
+typedef struct {
+  unsigned long Timer = 0UL;      
+} Timer;
+
+typedef struct {
+  char Timestamp[48];     
+} Tswr;  // Timestamp with Reason   
 
 // ************* CONSTANTS ***************
 
@@ -61,56 +84,44 @@ const bool RESPOND = false;        // Respond to SMS
 const bool SERIALON = true;        // USB Serial enable
 const int UNDERTEMP = -20;         // Undertemp Shutdown temperature in Celsius
 const int OVERTEMP = 60;           // Overtemp Shutdown temperature in Celsius
-
-
+const double HOME_LAT = 42.549379; // Home Location Lattitude
+const double HOME_LON = -82.923508;// Home Location Longitude
 
 // ************* GLOBAL VARIABLES ***************
 
-double extVoltage;                  // measured voltage (max. 16.5V)
-int batteryLevel;                  // Internal battery percentage
-double intVoltage;                  // Internal battery voltage
-enum PowerState powerState = INIT; // State of the vehicle battery 0-Off,1-Battery,2-Alternator,3-Init
-unsigned int timeToSleep;          // ESP32 deep sleep wakeup time (seconds)
-bool vehicleDisabled = false;      // Vehicle disabled status (stored on ESP32 EEPROM Byte 0)
-DateTime rtc;                      // RTC datetime object
-double gpsHdop;                     // GPS Hdop (Horizontal Dilution of precision)
-double gpsAltitude;                 // GPS Altitude
-double gpsHeading;                  // GPS Heading
-double gpsSpeed;                    // GPS Velocity
-double gpsDistance;                 // GPS gpsDistance to Home
-double gpsLat;                     // GPS Latitude
-double gpsLon;                     // GPS Longitude
-short gpsSats;                     // GPS Active Sattelites
-short temperature;                 // Temperature
-unsigned long gpsTimer = 0UL;      // GPS update timer
-unsigned long mainTimer = 0UL;     // Main loop update timer
-unsigned long btTimer = 0UL;       // Bluetooth security timer
-unsigned long serTimer = 0UL;      // Serial input timer
-unsigned long cellTimer = 0UL;     // Cell network timer
-char lastRestartReason[16];        // Last restart reason (Stored in RTC EEPROM)
-char lastStartup1[48];             // Last startup timestamp & reason (Stored in RTC EEPROM)
-char lastStartup2[48];             // Last 2nd startup timestamp (Stored in RTC EEPROM)
-char lastStartup3[48];             // Last 3rd startup timestamp (Stored in RTC EEPROM)
-char lastTimeAdjust[32];           // Last timestamp or GPS adjusted datetime (Stored in RTC EEPROM)
-char lastSleep[48];                // Last recorded sleep time (Stored in RTC EEPROM)
-bool gpsFix = false;               // GPS fix status
-bool gpsDebug = false;             // GPS Debug Output
+bool vehicleDisabled;              // Vehicle disabled status (stored on ESP32 EEPROM Byte 0)
 bool consoleUnlocked = false;      // Serial unlocked
-short consoleTimeout;              // Console timeout after wakeup (seconds)
 bool isUpdating = false;           // OTA update mode
+bool debug;                        // Debug Mode (stored in ESP32 EEPROM Byte 1)
+bool cellConnected;                // Cellular network is connected and ready
+bool btDeviceConnected = false;    // BT device connected
+bool oldDeviceConnected = false;   // Last BT device connected
+bool btEnabled = true;             // BT enabled 
+double extVoltage;                 // measured voltage (max. 16.5V)
+double intVoltage;                 // Internal ESP32 battery voltage
+unsigned int timeToSleep;          // ESP32 deep sleep wakeup time (seconds)
+short temperature;                 // Temperature
+unsigned short batteryLevel;       // Internal battery percentage
+unsigned short consoleTimeout;     // Console lock timeout after device wakeup (seconds)
 char btName[8];                    // Bluetooth Discovery Name
 char wifiSsid[7];                  // Wifi SSID for OTA updates (Stored in RTC EEPROM)
 char wifiKey[17];                  // Wifi SSID key for OTA updates (Stored in RTC EEPROM)
 char consolePassword[8];           // Console Password (Stored in RTC EEPROM)
 char smsNumber[13];                // Phone number to send reply SMS to
-unsigned long startMicros;         // Function execution timer
-unsigned long endMicros;           // Function execution timer
-int gpsTimeOffset;                 // Difference between GPS and RTC time in seconds
-bool debug;                        // Debug Mode (stored in ESP32 EEPROM Byte 1)
-bool cellConnected;                // Cellular network is connected and ready
-bool btDeviceConnected = false;    // BT device connected
-bool oldDeviceConnected = false;   // Last BT device connected
-bool btEnabled = true;              // BT enabled 
+char lastRestartReason[16];        // Last restart reason (Stored in RTC EEPROM)
+char lastTimeAdjust[32];           // Last timestamp or GPS adjusted datetime (Stored in RTC EEPROM)
+Tswr lastStartup1;                 // Last startup timestamp & reason (Stored in RTC EEPROM)
+Tswr lastStartup2;                 // Last 2nd startup timestamp (Stored in RTC EEPROM)
+Tswr lastStartup3;                 // Last 3rd startup timestamp (Stored in RTC EEPROM)
+Tswr lastSleep;                    // Last recorded sleep time (Stored in RTC EEPROM)
+PowerState powerState = INIT;      // State of the vehicle battery OFF,BATTERY,ALTERNATOR,INIT
+DateTime rtc;                      // RTC datetime object
+Gps gps;                           // gps data object
+Timer gpsupdate;                   // GPS update timer
+Timer mainloop;                    // Main loop update timer
+Timer bluetooth;                   // Bluetooth security timer
+Timer serial;                      // Serial input timer
+Timer cell;                        // Cell network timer
 
 // ********** FUNCTION DEFINITIONS *************
 
@@ -169,7 +180,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
       std::string rxValue = pCharacteristic->getValue();
       if (rxValue.length() > 1) {
-        if (consoleUnlocked == false && millis() - btTimer < consoleTimeout * 1000)  {
+        if (consoleUnlocked == false && millis() - bluetooth.Timer < consoleTimeout * 1000)  {
           if (rxValue == consolePassword) {
             consoleUnlocked = true;
             serialprint("Console Unlocked\n\r");
@@ -222,7 +233,7 @@ void setup() {
   eeprom.eeprom_read(233, (byte *)btName, 8);  // Read Bluetooth name
   eeprom.eeprom_read(241, (byte *)smsNumber, 12);  // Read SMS reply number
   eeprom.eeprom_read(253, &consoleTimeout);  // Read Console Timeout
-  eeprom.eeprom_read(255, (byte *)lastSleep, 48);  // Read last sleep time
+  eeprom.eeprom_read(255, (byte *)lastSleep.Timestamp, 48);  // Read last sleep time
 
   serialprint("Initializing Hardware Watchdog...\n\r");
   esp_task_wdt_init(WDT_TIMEOUT, true);  //enable panic so ESP32 restarts
@@ -250,7 +261,7 @@ void setup() {
   pRxCharacteristic->setCallbacks(new MyCallbacks());
   pService->start();
   pServer->getAdvertising()->start();
-  btTimer = millis();
+  bluetooth.Timer = millis();
 
   serialprint("Initialization Complete.\n\r");
   print_wakeup_reason();
@@ -276,14 +287,14 @@ void loop() {
       if (incomingByte != 0) process_input(incomingByte);
     }
   }
-  if (millis() - mainTimer > 5000) {
+  if (millis() - mainloop.Timer > 5000) {
     temperature = (HWRTC.getTemperature());
     overtemp_check();
     int_volt_check();
     ext_volt_check();
-    //print_status();
+    print_status();
     if (powerState == OFF || powerState == BATTERY) deepsleep();
-    mainTimer = millis();
+    mainloop.Timer = millis();
   }
 }
 
@@ -315,9 +326,9 @@ void cellular_loop( void * pvParameters ) {
     digitalWrite(MODEM_POWER_PIN, HIGH);  // Power on Sim800L Module
     GSM.begin(9600);                     // Initialize GSM on Sim800L
     serialprint("Waiting for cellular network...\n\r");
-    cellTimer = millis();
+    cell.Timer = millis();
     while (!GSM.prepareForSmsReceive()) {
-      if (millis() - cellTimer > 600000) {
+      if (millis() - cell.Timer > 600000) {
         serialprint("Cellular connection timeout. Resetting device...\n\r");
         reset_device();
       }
@@ -357,7 +368,7 @@ long int syncProvider() {
 }
 
 void security_check() {
-    if (millis() - btTimer < consoleTimeout * 1000) {
+    if (millis() - bluetooth.Timer < consoleTimeout * 1000) {
       if (SERIALON) {
         if (Serial.available()) {
           String teststr = Serial.readString();
@@ -390,7 +401,7 @@ char serial_read() {
 
 /* void readbtname() {
   bool answered = false;
-  while (millis() < serTimer + 7000 && answered == false) {
+  while (millis() < serial.Timer + 7000 && answered == false) {
     if (SerialBT.hasClient() && SerialBT.available()) {
       String teststr = SerialBT.readString();  //read until timeout
       teststr.trim();
@@ -430,7 +441,7 @@ char serial_read() {
 
 void readtimeout() {
   bool answered = false;
-  while (millis() < serTimer + 7000 && answered == false) {
+  while (millis() < serial.Timer + 7000 && answered == false) {
     if (SerialBT.hasClient() && SerialBT.available()) {
       String teststr = SerialBT.readString();  //read until timeout
       teststr.trim();
@@ -554,9 +565,9 @@ void process_input(char incomingByte) {
       serialprint("\n\r");
       serialprint((String)"Uptime: " + uptime_formatter::getUptime() + "\n\r");
       serialprint("Last Sleep: ");
-      serialprint((String)lastSleep + "\n\r");
+      serialprint((String)lastSleep.Timestamp + "\n\r");
       serialprint((String)"Last Time Adjustment: " + lastTimeAdjust + "\n\r");
-      serialprint((String)"RTC/GPS Time Lag: " + gpsTimeOffset + " Seconds\n\r");
+      serialprint((String)"RTC/GPS Time Lag: " + gps.TimeOffset + " Seconds\n\r");
       serialprint((String)"Temperature: " + temperature + "°C\n\r");
       serialprint((String)"ESP32 Battery: " + intVoltage + "v (" + batteryLevel + "%)\n\r");
       serialprint((String)"Vehicle Battery: " + extVoltage + "v\n\r");
@@ -565,18 +576,18 @@ void process_input(char incomingByte) {
       else if (powerState == ALTERNATOR) serialprint("powerState: Alternator Voltage\n\r");
       if (vehicleDisabled) serialprint("Vehicle Disabled: YES\n\r");
       else serialprint("Vehicle Disabled: NO\n\r");
-      serialprint((String)"Aquired Satellites: " + gpsSats + "\n\r");
+      serialprint((String)"Aquired Satellites: " + gps.Sats + "\n\r");
       serialprint("Latitude: ");
-      serialprint((String)gpsLat); //FIXME: 6 digits
+      serialprint((String)gps.Lat); //FIXME: 6 digits
       serialprint("°\n\r");
       serialprint("Longitude: ");
-      serialprint((String)gpsLon); //FIXME: 6 digits
+      serialprint((String)gps.Lon); //FIXME: 6 digits
       serialprint("°\n\r");
-      serialprint((String)"Distance to Home: " + gpsDistance + " miles\n\r");
-      serialprint((String)"Precision: " + gpsHdop + " meters\n\r");
-      serialprint((String)"Speed: " + gpsSpeed + " mph\n\r");
-      serialprint((String)"Heading: " + gpsHeading + "°\n\r");
-      serialprint((String)"Altitude: " + gpsAltitude + " feet\n\r");
+      serialprint((String)"Distance to Home: " + gps.Distance + " miles\n\r");
+      serialprint((String)"Precision: " + gps.Hdop + " meters\n\r");
+      serialprint((String)"Speed: " + gps.Speed + " mph\n\r");
+      serialprint((String)"Heading: " + gps.Heading + "°\n\r");
+      serialprint((String)"Altitude: " + gps.Altitude + " feet\n\r");
       serialprint("Wifi OTA IP address: ");
       serialprint((String)WiFi.localIP() + "\n\r");
       serialprint((String)"Wifi OTA SSID: " + wifiSsid + "\n\r");
@@ -588,7 +599,7 @@ void process_input(char incomingByte) {
       if (btDeviceConnected) serialprint("Bluetooth Serial: Client Connected\n\r");
       else serialprint("Bluetooth Serial: No Connections\n\r");
       serialprint((String)"Console Timeout: " + consoleTimeout + " seconds\n\r");
-      if (gpsFix) serialprint("GPS Fix: YES\n\r");
+      if (gps.Fix) serialprint("GPS Fix: YES\n\r");
       else serialprint("GPS Fix: NO\n\r");
       if (cellConnected) serialprint("Cellular Connected: YES\n\r");
       else serialprint("Cellular Connected: NO\n\r");
@@ -613,11 +624,11 @@ void process_input(char incomingByte) {
       disable_vehicle();
       break;
     case 103:
-      if (gpsDebug) {
-        gpsDebug = false;
+      if (gps.Debug) {
+        gps.Debug = false;
         serialprint("GPS Debug output is now: OFF\n\r");
       } else {
-        gpsDebug = true;
+        gps.Debug = true;
         serialprint("GPS Debug output is now: ON\n\r");
       }
       break;
@@ -630,24 +641,27 @@ void process_input(char incomingByte) {
 void gps_check() {
   while (Serial1.available() > 0) GPS.encode(Serial1.read());
   if (GPS.location.isUpdated()) {
-    gpsLat = GPS.location.lat();
-    gpsLon = GPS.location.lng();
-    if (gpsDebug) {
-      serialprint((String)"LOCATION Age: " + GPS.location.age() + "ms Raw gpsLat: ");
+    gps.Lat = GPS.location.lat();
+    gps.Lon = GPS.location.lng();
+    if (gps.Debug) {
+      serialprint((String)"LOCATION Age: " + GPS.location.age() + "ms Raw Lat: ");
       serialprint(GPS.location.rawLat().negative ? "-" : "+");
       serialprint((String)GPS.location.rawLat().deg + "[+" + GPS.location.rawLat().billionths + " billionths],  Raw Lon: ");
       serialprint(GPS.location.rawLng().negative ? "-" : "+");
       serialprint((String)GPS.location.rawLng().deg + "[+" + GPS.location.rawLng().billionths + " billionths],  Lat: ");
       serialprint((String)GPS.location.lat());  //FIXME: 6 digits
       serialprint(F(" Long="));
-      serialprint((String)GPS.location.lng() + "\n\r"); } }
+      serialprint((String)GPS.location.lng() + "\n\r"); 
+    } 
+  }
   else if (GPS.date.isUpdated()) {
-      if (gpsDebug) serialprint((String)"DATE Fix Age: " + GPS.date.age() + "ms Raw: " + GPS.date.value() + " Year: " + GPS.date.year() + " Month: " + GPS.date.month() + " Day=" + GPS.date.day() + "\n\r"); }
+      if (gps.Debug) serialprint((String)"DATE Fix Age: " + GPS.date.age() + "ms Raw: " + GPS.date.value() + " Year: " + GPS.date.year() + " Month: " + GPS.date.month() + " Day=" + GPS.date.day() + "\n\r"); 
+  }
   else if (GPS.time.isUpdated()) {
     rtc = RTC.now();
     time_t gpsEpoch = gpsunixtime();
     time_t rtcEpoch = rtc.unixtime();
-    gpsTimeOffset = rtcEpoch - gpsEpoch;
+    gps.TimeOffset = rtcEpoch - gpsEpoch;
     if (gpsEpoch != 943920000) {
       if (rtcEpoch + 10 < gpsEpoch || rtcEpoch - 10 > gpsEpoch) {
         HWRTC.setHour(GPS.time.hour());
@@ -663,54 +677,44 @@ void gps_check() {
         if (debug && consoleUnlocked) serialprint((String)"RTC time adjusted to GPS: " + rtc.hour() + ":" + rtc.minute() + ":" + rtc.second() + " -> " + GPS.time.hour() + ":" + GPS.time.minute() + ":" + GPS.time.second() + "\n\r");
       }
     }
-    if (gpsDebug) serialprint((String)"TIME Fix Age: " + GPS.time.age() + "ms Raw: " + GPS.time.value() + " Hour: " + GPS.time.hour() + " Minute: " + GPS.time.minute() + " Second: " + GPS.time.second() + " Hundredths: " + GPS.time.centisecond() + "\n\r");
+    if (gps.Debug) serialprint((String)"TIME Fix Age: " + GPS.time.age() + "ms Raw: " + GPS.time.value() + " Hour: " + GPS.time.hour() + " Minute: " + GPS.time.minute() + " Second: " + GPS.time.second() + " Hundredths: " + GPS.time.centisecond() + "\n\r");
   } 
   else if (GPS.speed.isUpdated()) {
-    gpsSpeed = GPS.speed.mph();
-    if (gpsDebug) serialprint((String)"SPEED Fix Age: " + GPS.speed.age() + "ms Raw: " + GPS.speed.value() + " Knots: " + GPS.speed.knots() + " MPH: " + GPS.speed.mph() + " m/s: " + GPS.speed.mps() + " km/h: " + GPS.speed.kmph() + "\n\r");
+    gps.Speed = GPS.speed.mph();
+    if (gps.Debug) serialprint((String)"SPEED Fix Age: " + GPS.speed.age() + "ms Raw: " + GPS.speed.value() + " Knots: " + GPS.speed.knots() + " MPH: " + GPS.speed.mph() + " m/s: " + GPS.speed.mps() + " km/h: " + GPS.speed.kmph() + "\n\r");
   }
   else if (GPS.course.isUpdated()) {
-    gpsHeading = GPS.course.deg();
-    if (gpsDebug) serialprint((String)"COURSE Fix Age: " + GPS.course.age() + "ms Raw: " + GPS.course.value() + " Deg: " + GPS.course.deg() + "\n\r");
+    gps.Heading = GPS.course.deg();
+    if (gps.Debug) serialprint((String)"COURSE Fix Age: " + GPS.course.age() + "ms Raw: " + GPS.course.value() + " Deg: " + GPS.course.deg() + "\n\r");
   }
   else if (GPS.altitude.isUpdated()) {
-    gpsAltitude = GPS.altitude.feet();
-    if (gpsDebug) serialprint((String)"ALTITUDE Fix Age: " + GPS.altitude.age() + "ms Raw: " + GPS.altitude.value() + " Meters: " + GPS.altitude.meters() + " Miles: " + GPS.altitude.miles() + " KM: " + GPS.altitude.kilometers() + " Feet: " + GPS.altitude.feet() + "\n\r");
+    gps.Altitude = GPS.altitude.feet();
+    if (gps.Debug) serialprint((String)"ALTITUDE Fix Age: " + GPS.altitude.age() + "ms Raw: " + GPS.altitude.value() + " Meters: " + GPS.altitude.meters() + " Miles: " + GPS.altitude.miles() + " KM: " + GPS.altitude.kilometers() + " Feet: " + GPS.altitude.feet() + "\n\r");
   }
   else if (GPS.satellites.isUpdated()) {
-    gpsSats = GPS.satellites.value();
-    if (gpsSats > 0 && gpsFix == false) {
-      gpsFix = true;
-      serialprint((String)"GPS fix aquired with "+gpsSats+" satellites\n\r");
-    } else if (gpsSats == 0) gpsFix = false;
-    if (gpsDebug) serialprint((String)"SATELLITES Fix Age: " + GPS.satellites.age() + "ms Value: " + GPS.satellites.value() + "\n\r");
+    gps.Sats = GPS.satellites.value();
+    if (gps.Sats > 0 && !gps.Fix) {
+      gps.Fix = true;
+      serialprint((String)"GPS fix aquired with "+gps.Sats+" satellites\n\r");
+    } 
+    else if (gps.Sats < 1) gps.Fix = false;
+    if (gps.Debug) serialprint((String)"SATELLITES Fix Age: " + GPS.satellites.age() + "ms Value: " + GPS.satellites.value() + "\n\r");
   }
   else if (GPS.hdop.isUpdated()) {
-    gpsHdop = GPS.hdop.hdop();
-    if (gpsDebug) serialprint((String)"HDOP Fix Age: " + GPS.hdop.age() + "ms raw: " + GPS.hdop.value() + " Hdop: " + GPS.hdop.hdop() + "\n\r");
+    gps.Hdop = GPS.hdop.hdop();
+    if (gps.Debug) serialprint((String)"HDOP Fix Age: " + GPS.hdop.age() + "ms raw: " + GPS.hdop.value() + " Hdop: " + GPS.hdop.hdop() + "\n\r");
   }
-  else if (millis() - gpsTimer > 5000) {
+  else if (millis() - gpsupdate.Timer > 5000) {
     if (GPS.location.isValid()) {
-      static const double HOME_LAT = 42.549379, HOME_LON = -82.923508;
-      double gpsDistanceToHome =
-        TinyGPSPlus::distanceBetween(
-          GPS.location.lat(),
-          GPS.location.lng(),
-          HOME_LAT,
-          HOME_LON);
-      double courseToHome =
-        TinyGPSPlus::courseTo(
-          GPS.location.lat(),
-          GPS.location.lng(),
-          HOME_LAT,
-          HOME_LON);
-      gpsDistance = (gpsDistanceToHome / 1000) * 0.62137;
-      if (gpsDebug) serialprint((String)"HOME gpsDistance: " + gpsDistance + " mi Course-to=" + courseToHome + " degrees [" + TinyGPSPlus::cardinal(courseToHome) + "]\n\r");
+      double gpsDistanceToHome = TinyGPSPlus::distanceBetween(GPS.location.lat(), GPS.location.lng(), HOME_LAT, HOME_LON);
+      double courseToHome = TinyGPSPlus::courseTo(GPS.location.lat(), GPS.location.lng(), HOME_LAT, HOME_LON);
+      gps.Distance = (gpsDistanceToHome / 1000) * 0.62137;
+      if (gps.Debug) serialprint((String)"HOME Distance: " + gps.Distance + " mi Course-to=" + courseToHome + " degrees [" + TinyGPSPlus::cardinal(courseToHome) + "]\n\r");
     }
-    if (gpsDebug) serialprint((String)"DIAGS Chars: " + GPS.charsProcessed() + " Sentences-with-Fix: " + GPS.sentencesWithFix() + " Failed-checksum: " + GPS.failedChecksum() + " Passed-checksum: " + GPS.passedChecksum() + "\n\r");
-    if (GPS.charsProcessed() < 10 && gpsDebug) serialprint("WARNING: No GPS data.  Check wiring.\n\r");
+    if (gps.Debug) serialprint((String)"DIAGS Chars: " + GPS.charsProcessed() + " Sentences-with-Fix: " + GPS.sentencesWithFix() + " Failed-checksum: " + GPS.failedChecksum() + " Passed-checksum: " + GPS.passedChecksum() + "\n\r");
+    if (GPS.charsProcessed() < 10 && gps.Debug) serialprint("WARNING: No GPS data.  Check wiring.\n\r");
   }
-  gpsTimer = millis();
+  gpsupdate.Timer = millis();
 }
 
 void overtemp_check() {
@@ -731,10 +735,10 @@ void overtemp_check() {
 void gotosleep(char* sleepReason) {
   char* rdt;
   rdt = returndatetime();
-  strcpy(lastSleep, rdt);
-  strcat(lastSleep, " | ");
-  strcat(lastSleep, sleepReason);
-  eeprom.eeprom_write(255, (byte *)lastSleep, sizeof(lastSleep));  // Write last sleep time & reason
+  strcpy(lastSleep.Timestamp, rdt);
+  strcat(lastSleep.Timestamp, " | ");
+  strcat(lastSleep.Timestamp, sleepReason);
+  eeprom.eeprom_write(255, (byte *)lastSleep.Timestamp, sizeof(lastSleep.Timestamp));  // Write last sleep time & reason
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -810,8 +814,8 @@ void disable_vehicle() {
     char* smsmsg;
     char* db;
     char* db2;
-    dtostrf(gpsLat, 8, 4, db);
-    dtostrf(gpsLon, 8, 4, db2);
+    dtostrf(gps.Lat, 8, 4, db);
+    dtostrf(gps.Lon, 8, 4, db2);
     smsmsg = (char *)"Vehicle Disabled\n\rhttps://maps.google.com/?q=";
     strcat(smsmsg, db);
     strcat(smsmsg, ",");
@@ -821,7 +825,7 @@ void disable_vehicle() {
       serialprint((String)"Sending SMS error code: " + smserror + "\n\r");
     }
   } 
-  else if (vehicleDisabled) {
+  else {
     vehicleDisabled = false;
     EEPROM.write(0, 0);
     EEPROM.commit();
@@ -843,7 +847,7 @@ void ext_volt_check() {
   extVoltage = vOut * FACTOR;
   if (extVoltage < 10) powerState = OFF;
   else if (extVoltage <= 12.8) powerState = BATTERY;
-  else if (extVoltage > 12.8) powerState = ALTERNATOR;
+  else powerState = ALTERNATOR;
 }
 
 void print_status() {
@@ -872,11 +876,9 @@ void int_volt_check() {
     sample_count++;
     delay(10);
   }
-  double raw = sum/10;
+  double raw = sum / 10;
   intVoltage = ((((raw/4095)*2)*3.3)*1100)/1000;
   batteryLevel = _min(map(intVoltage, 3.3, 4.2, 0, 100), 100);
-  sample_count = 0;
-  sum = 0;
 }
 
 void old_int_volt_check() {
@@ -890,8 +892,6 @@ void old_int_volt_check() {
   intVoltage = (sum / INT_SAMPLES) / 2350.0;
   batteryLevel = _min(map(sum / INT_SAMPLES, 2000, 2350.0, 0, 100), 100);  //1100
   if (sum / INT_SAMPLES < 1200) batteryLevel = 0;
-  sample_count = 0;
-  sum = 0;
   intVoltage = intVoltage * 4.20;
 }
 

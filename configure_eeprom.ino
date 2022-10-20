@@ -16,9 +16,9 @@
   253-254: Console Timeout Seconds (2 Bytes)
   255-303: Last recorded sleep time & reason (48 Bytes)
 
-  500-509: Last Lattitude
-  510-519: Last Longitude
-  520-525: Last Distance from home
+  500-519: Last Latitude
+  520-529: Last Longitude
+  530-535: Last Distance from home
  
 
 #include <Wire.h>

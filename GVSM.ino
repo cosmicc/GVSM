@@ -52,6 +52,8 @@
 
 typedef enum {OFF, BATTERY, ALTERNATOR, INIT} PowerState;
 
+typedef enum {low, high} Speed;
+
 // ************* STRUCTS ***************
 
 typedef struct {
@@ -62,7 +64,10 @@ typedef struct {
   double Distance;                 // GPS Distance to Home
   double Lat;                      // GPS Latitude
   double Lon;                      // GPS Longitude
+  char LastLat[19];                  // GPS Last Latitude
+  char LastLon[19];                  // GPS Last Longitude
   short Sats;                      // GPS Active Sattelites
+  char LastDistance[8];                // GPS Last Distance from home
   bool Fix = false;                // GPS fix status
   bool Debug = false;              // GPS Debug Output
   int TimeOffset;                  // Difference between GPS and RTC time in seconds
@@ -115,6 +120,7 @@ Tswr lastStartup2;                 // Last 2nd startup timestamp (Stored in RTC 
 Tswr lastStartup3;                 // Last 3rd startup timestamp (Stored in RTC EEPROM)
 Tswr lastSleep;                    // Last recorded sleep time (Stored in RTC EEPROM)
 PowerState powerState = INIT;      // State of the vehicle battery OFF,BATTERY,ALTERNATOR,INIT
+Speed speed = low;                 // ESP32 Clock Frequency HIGH (240Mgz) or LOW (80Mgz)
 DateTime rtc;                      // RTC datetime object
 Gps gps;                           // gps data object
 Timer gpsupdate;                   // GPS update timer
@@ -147,14 +153,15 @@ time_t gpsunixtime();
 boolean isNumeric(String str);
 void serialprint(String buf);
 void gotosleep(char* sleepReason);
+void set_speed(Speed spd);
 
 TaskHandle_t CellLoop;  // create cpu core 1 task handle
 
-// US Eastern Time Zone (New York, Detroit)
+/* US Eastern Time Zone (New York, Detroit) */
 TimeChangeRule myDST = { "EDT", Second, Sun, Mar, 2, -240 };  // Daylight time = UTC - 4 hours
 TimeChangeRule mySTD = { "EST", First, Sun, Nov, 2, -300 };   // Standard time = UTC - 5 hours
 Timezone usEastern(myDST, mySTD);
-TimeChangeRule *tcr;  // pointer to the time change rule, use to get TZ abbrev
+TimeChangeRule *tcr;                                          // pointer to the time change rule, use to get TZ abbrev
 
 RTClib RTC;
 DS3231 HWRTC;
@@ -164,7 +171,7 @@ TinyGPSPlus GPS;
 BLEServer *pServer = NULL;
 BLECharacteristic * pTxCharacteristic;
 
-// ******************* CLASSES **********************
+// ******************* CLASSES ***********************
 
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -190,21 +197,22 @@ class MyCallbacks: public BLECharacteristicCallbacks {
   }
 };
 
-// ******************* SETUP **********************
+// ********************* SETUP ************************
 
 void setup() {
+  set_speed(low);
   if (SERIALON) Serial.begin(115200);
   pinMode(WAKEUP_PIN, INPUT_PULLDOWN);
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, 1);
-  pinMode(RELAY_PIN, OUTPUT);  // Initialize Relay Output Pin
-  EEPROM.begin(EEPROM_SIZE);   // Initialize EEPROM
-  if (EEPROM.read(0) == 0) {   // Read EEPROM Byte 0 (vehicleDisabled_status)
+  pinMode(RELAY_PIN, OUTPUT);                     // Initialize Relay Output Pin
+  EEPROM.begin(EEPROM_SIZE);                      // Initialize EEPROM
+  if (EEPROM.read(0) == 0) {                      // Read EEPROM Byte 0 (vehicleDisabled_status)
     vehicleDisabled = false; 
   } 
   else {
     vehicleDisabled = true; 
   }
-  if (EEPROM.read(1) == 0) {  // Read EEPROM Byte 1 (debug mode)
+  if (EEPROM.read(1) == 0) {                      // Read EEPROM Byte 1 (debug mode)
     debug = false;
     consoleUnlocked = false;
   } 
@@ -219,7 +227,7 @@ void setup() {
   else digitalWrite(RELAY_PIN, LOW);
   serialprint("Initializing RTC Module...");
   Wire.begin();
-  setSyncProvider(syncProvider);   // the function to get the time from the RTC
+  setSyncProvider(syncProvider);                   // the function to get the time from the RTC
   if (timeStatus() != timeSet) serialprint("Unable to sync with the RTC\n\r");
   else serialprint("RTC has set the system time\n\r");
   temperature = HWRTC.getTemperature();
@@ -227,17 +235,20 @@ void setup() {
 
   serialprint("Initializing RTC EEPROM...\n\r");
   eeprom.eeprom_read(16, (byte *)lastTimeAdjust, 32);  // Read last time adjust
-  eeprom.eeprom_read(200, (byte *)wifiSsid, 6);  // Read SSID
-  eeprom.eeprom_read(208, (byte *)wifiKey, 16);  // Read SSID key
-  eeprom.eeprom_read(225, (byte *)consolePassword, 8);  // Read Console password
-  eeprom.eeprom_read(233, (byte *)btName, 8);  // Read Bluetooth name
-  eeprom.eeprom_read(241, (byte *)smsNumber, 12);  // Read SMS reply number
-  eeprom.eeprom_read(253, &consoleTimeout);  // Read Console Timeout
+  eeprom.eeprom_read(200, (byte *)wifiSsid, 6);        // Read SSID
+  eeprom.eeprom_read(208, (byte *)wifiKey, 16);        // Read SSID key
+  eeprom.eeprom_read(225, (byte *)consolePassword, 8); // Read Console password
+  eeprom.eeprom_read(233, (byte *)btName, 8);          // Read Bluetooth name
+  eeprom.eeprom_read(241, (byte *)smsNumber, 12);      // Read SMS reply number
+  eeprom.eeprom_read(253, &consoleTimeout);            // Read Console Timeout
   eeprom.eeprom_read(255, (byte *)lastSleep.Timestamp, 48);  // Read last sleep time
+  eeprom.eeprom_read(500, (byte *)gps.LastLat, 11);
+  eeprom.eeprom_read(520, (byte *)gps.LastLon, 11);  
+  eeprom.eeprom_read(530, (byte *)gps.LastDistance, 8);  
 
   serialprint("Initializing Hardware Watchdog...\n\r");
-  esp_task_wdt_init(WDT_TIMEOUT, true);  //enable panic so ESP32 restarts
-  esp_task_wdt_add(NULL);                //add current thread to WDT watch
+  esp_task_wdt_init(WDT_TIMEOUT, true);                //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL);                              //add current thread to WDT watch
 
   serialprint("Initializing GPS Module...\n\r");
   pinMode(GPS_POWER_PIN, OUTPUT);
@@ -273,7 +284,7 @@ void setup() {
   gps_check();
 }
 
-// ******************* LOOP **********************
+// ********************* LOOP *************************
 
 void loop() {
   esp_task_wdt_reset();
@@ -292,13 +303,24 @@ void loop() {
     overtemp_check();
     int_volt_check();
     ext_volt_check();
-    print_status();
+    //serialprint((String)gps.LastLat + " | " + gps.LastLon + " | " + gps.LastDistance + "\n\r");
     if (powerState == OFF || powerState == BATTERY) deepsleep();
     mainloop.Timer = millis();
   }
 }
 
 // ******************* FUNCTIONS **********************
+
+void set_speed(Speed spd) {
+  if (spd == high) {
+    speed = high;
+    setCpuFrequencyMhz(240);
+  }
+  else {
+    speed = low;
+    setCpuFrequencyMhz(80);
+  }
+}
 
 void serialbt_check( void * pvParameters ) {
   if (btEnabled) {
@@ -375,15 +397,15 @@ void security_check() {
           teststr.trim();
           if (teststr == consolePassword) {
             consoleUnlocked = true;
+            debug = true;
             serialprint("Console Unlocked\n\r");
           }
       }
     } 
     else if (btEnabled) {
-      if (debug) serialprint("Console Unlock Timeout!\n\r");
+      serialprint("Console Unlock Timeout!\n\r");
       btEnabled = false;
       pServer->getAdvertising()->stop();
-      //pService->stop();
       WiFi.mode(WIFI_OFF);
       if (SERIALON) Serial.end();
     }
@@ -398,89 +420,6 @@ char serial_read() {
   } 
   else return 0;
 }
-
-/* void readbtname() {
-  bool answered = false;
-  while (millis() < serial.Timer + 7000 && answered == false) {
-    if (SerialBT.hasClient() && SerialBT.available()) {
-      String teststr = SerialBT.readString();  //read until timeout
-      teststr.trim();
-      answered = true;
-      if (debug && consoleUnlocked) {
-        //char buff = &btName;
-        //strcpy(*buff, teststr);
-        //eeprom.eeprom_write(233, (byte *)buff, 8);  // Read Bluetooth name
-        //btName = teststr;
-        Serial.println((String)"New bluetooth discovery name: " + teststr);
-        SerialBT.println((String)"New bluetooth discovery name: " + teststr);
-      } else {
-        Serial.println("Invalid console timeout value");
-        SerialBT.println("Invalid console timeout value");
-      }
-    } else if (Serial.available()) {
-      String teststr = Serial.readString();
-      teststr.trim();
-      answered = true;
-      Serial.println(teststr);
-      if (debug && consoleUnlocked) {
-        //eeprom.eeprom_write(233, (byte *)teststr, 8);  // Read Bluetooth name
-        //btName = teststr;
-        Serial.println((String)"New bluetooth discovery name:  " + teststr);
-        SerialBT.println((String)"New bluetooth discovery name:  " + teststr);
-      } else {
-        Serial.println("Invalid console timeout value");
-        SerialBT.println("Invalid console timeout value");
-      }
-    }
-  }
-  if (answered == false) {
-    Serial.println("Input timeout waiting for value");
-    SerialBT.println("Input timeout waiting for value");
-  }
-}
-
-void readtimeout() {
-  bool answered = false;
-  while (millis() < serial.Timer + 7000 && answered == false) {
-    if (SerialBT.hasClient() && SerialBT.available()) {
-      String teststr = SerialBT.readString();  //read until timeout
-      teststr.trim();
-      answered = true;
-      if (isNumeric(teststr)) {
-        short nto;
-        nto = teststr.toInt();
-        eeprom.eeprom_write(253, nto);
-        consoleTimeout = nto;
-        Serial.println((String)"New console timeout seconds: " + teststr);
-        SerialBT.println((String)"New console timeout seconds: " + teststr);
-      } else {
-        Serial.println("Invalid console timeout value");
-        SerialBT.println("Invalid console timeout value");
-      }
-    } else if (Serial.available()) {
-      String teststr = Serial.readString();
-      teststr.trim();
-      answered = true;
-      if (isNumeric(teststr)) {
-        short nto;
-        nto = teststr.toInt();
-        eeprom.eeprom_write(253, nto);
-        consoleTimeout = nto;
-        Serial.println((String)"New console timeout seconds: " + teststr);
-        SerialBT.println((String)"New console timeout seconds: " + teststr);
-      } else {
-        Serial.println("Invalid console timeout value");
-        SerialBT.println("Invalid console timeout value");
-      }
-    }
-  }
-  if (answered == false) {
-    if (debug && consoleUnlocked) {
-      Serial.println("Input timeout waiting for value");
-      SerialBT.println("Input timeout waiting for value");
-    }
-  }
-} */
 
 void process_input(char incomingByte) {
   switch (incomingByte) {
@@ -526,13 +465,13 @@ void process_input(char incomingByte) {
         serialprint("\n\rEnd\n\r");
       })
       .onProgress([](unsigned int progress, unsigned int total) {
-        char* tmp;
+        char tmp[80];
         sprintf(tmp, "%u%%\r", (progress / (total / 100)));
         serialprint((String)"Progress: " + tmp + "\n\r");
         esp_task_wdt_reset();
       })
       .onError([](ota_error_t error) {
-        char* tmp;
+        char tmp[80];
         sprintf(tmp, "%u", error);
         serialprint((String)"Error[" + tmp + "]: ");
         if (error == OTA_AUTH_ERROR) serialprint("Auth Failed\n\r");
@@ -569,21 +508,35 @@ void process_input(char incomingByte) {
       serialprint((String)"Last Time Adjustment: " + lastTimeAdjust + "\n\r");
       serialprint((String)"RTC/GPS Time Lag: " + gps.TimeOffset + " Seconds\n\r");
       serialprint((String)"Temperature: " + temperature + "°C\n\r");
-      serialprint((String)"ESP32 Battery: " + intVoltage + "v (" + batteryLevel + "%)\n\r");
+      char* spds;
+      if (speed == low) spds = "LOW (80Mhz)";
+      else spds = "HIGH (240Mhz)";
+      serialprint((String)"ESP Clock Speed: " + spds + "\n\r");
+      char* blev;
+      if (powerState < 1) blev = "Discharging";
+      else if (batteryLevel == 100) blev = "Charge Complete";
+      else blev = "Charging";
+      serialprint((String)"ESP32 Battery: " + intVoltage + "v (" + batteryLevel + "%) " + blev + "\n\r");
       serialprint((String)"Vehicle Battery: " + extVoltage + "v\n\r");
-      if (powerState == OFF) serialprint("powerState: No Voltage\n\r");
-      else if (powerState == BATTERY) serialprint("powerState: Battery Voltage\n\r");
-      else if (powerState == ALTERNATOR) serialprint("powerState: Alternator Voltage\n\r");
-      if (vehicleDisabled) serialprint("Vehicle Disabled: YES\n\r");
-      else serialprint("Vehicle Disabled: NO\n\r");
+      if (powerState == OFF) serialprint("Power State: No Voltage\n\r");
+      else if (powerState == BATTERY) serialprint("Power State: Battery Voltage\n\r");
+      else if (powerState == ALTERNATOR) serialprint("Power State: Alternator Voltage\n\r");
+      if (vehicleDisabled) serialprint("Vehicle Disabled: TRUE\n\r");
+      else serialprint("Vehicle Disabled: FALSE\n\r");
       serialprint((String)"Aquired Satellites: " + gps.Sats + "\n\r");
-      serialprint("Latitude: ");
-      serialprint((String)gps.Lat); //FIXME: 6 digits
-      serialprint("°\n\r");
-      serialprint("Longitude: ");
-      serialprint((String)gps.Lon); //FIXME: 6 digits
-      serialprint("°\n\r");
+      char buf[80];
+      char la[30];
+      char lo[30];
+      dtostrf(gps.Lat, 8, 6, la);
+      sprintf(buf, "Latitude: %s°\n\r", la);
+      serialprint(buf);
+      dtostrf(gps.Lon, 8, 6, lo);
+      sprintf(buf, "Longitude: %s°\n\r", lo);
+      serialprint(buf);
       serialprint((String)"Distance to Home: " + gps.Distance + " miles\n\r");
+      serialprint((String)"Last Sleep Latitude: " + gps.LastLat + "°\n\r");
+      serialprint((String)"Last Sleep Longitude: " + gps.LastLon + "°\n\r");
+      serialprint((String)"Last Distance to Home: " + gps.Distance + " miles\n\r");
       serialprint((String)"Precision: " + gps.Hdop + " meters\n\r");
       serialprint((String)"Speed: " + gps.Speed + " mph\n\r");
       serialprint((String)"Heading: " + gps.Heading + "°\n\r");
@@ -599,10 +552,10 @@ void process_input(char incomingByte) {
       if (btDeviceConnected) serialprint("Bluetooth Serial: Client Connected\n\r");
       else serialprint("Bluetooth Serial: No Connections\n\r");
       serialprint((String)"Console Timeout: " + consoleTimeout + " seconds\n\r");
-      if (gps.Fix) serialprint("GPS Fix: YES\n\r");
-      else serialprint("GPS Fix: NO\n\r");
-      if (cellConnected) serialprint("Cellular Connected: YES\n\r");
-      else serialprint("Cellular Connected: NO\n\r");
+      if (gps.Fix) serialprint("GPS Fix: TRUE\n\r");
+      else serialprint("GPS Fix: FALSE\n\r");
+      if (cellConnected) serialprint("Cellular Connected: TRUE\n\r");
+      else serialprint("Cellular Connected: FALSE\n\r");
       if (debug) serialprint("Debug Mode: ON\n\r");
       else serialprint("Debug Mode: OFF\n\r");
       serialprint("**** end status *****\n\r");
@@ -739,13 +692,27 @@ void gotosleep(char* sleepReason) {
   strcat(lastSleep.Timestamp, " | ");
   strcat(lastSleep.Timestamp, sleepReason);
   eeprom.eeprom_write(255, (byte *)lastSleep.Timestamp, sizeof(lastSleep.Timestamp));  // Write last sleep time & reason
+  char buf1[11];
+  char buf2[11];
+  char buf3[8];
+  if (gps.Lat != 0.0) {
+    dtostrf(gps.Lat, 8, 6, buf1);
+    eeprom.eeprom_write(500, (byte *)buf1, sizeof(buf1));
+  }
+  if (gps.Lon != 0.0) {
+    dtostrf(gps.Lon, 8, 6, buf2);
+    eeprom.eeprom_write(520, (byte *)buf2, sizeof(buf2));
+  }
+
+  dtostrf(gps.Distance, 7, 2, buf3);
+  eeprom.eeprom_write(530, (byte *)buf3, sizeof(buf3));
   Serial.flush();
   esp_deep_sleep_start();
 }
 
 void deepsleep() {
   if (!isUpdating && !vehicleDisabled) {
-    //digitalWrite(GPS_POWER_PIN, LOW);  // Power off GPS module
+    // digitalWrite(GPS_POWER_PIN, LOW);  // Power off GPS module
     if (powerState == OFF) {
       if (intVoltage < 3.3) {
         esp_sleep_enable_timer_wakeup(timeToSleep * uS_TO_S_FACTOR);
@@ -814,8 +781,8 @@ void disable_vehicle() {
     char* smsmsg;
     char* db;
     char* db2;
-    dtostrf(gps.Lat, 8, 4, db);
-    dtostrf(gps.Lon, 8, 4, db2);
+    dtostrf(gps.Lat, 8, 6, db);
+    dtostrf(gps.Lon, 8, 6, db2);
     smsmsg = (char *)"Vehicle Disabled\n\rhttps://maps.google.com/?q=";
     strcat(smsmsg, db);
     strcat(smsmsg, ",");
@@ -845,9 +812,18 @@ void ext_volt_check() {
   }
   vOut = ((sum / EXT_SAMPLES) / 4096) * 3.3;
   extVoltage = vOut * FACTOR;
-  if (extVoltage < 10) powerState = OFF;
-  else if (extVoltage <= 12.8) powerState = BATTERY;
-  else powerState = ALTERNATOR;
+  if (extVoltage < 10) {
+    powerState = OFF;
+    set_speed(low);
+  }
+  else if (extVoltage <= 12.8) {
+    powerState = BATTERY;
+    set_speed(low);
+  }
+  else {
+    powerState = ALTERNATOR;
+    set_speed(high);
+  }
 }
 
 void print_status() {
@@ -876,23 +852,9 @@ void int_volt_check() {
     sample_count++;
     delay(10);
   }
-  double raw = sum / 10;
+  double raw = sum / INT_SAMPLES;
   intVoltage = ((((raw/4095)*2)*3.3)*1100)/1000;
-  batteryLevel = _min(map(intVoltage, 3.3, 4.2, 0, 100), 100);
-}
-
-void old_int_volt_check() {
-  int sample_count = 0;
-  int sum = 0;
-  while (sample_count < INT_SAMPLES) {
-    sum += analogRead(35);
-    sample_count++;
-    delay(10);
-  }
-  intVoltage = (sum / INT_SAMPLES) / 2350.0;
-  batteryLevel = _min(map(sum / INT_SAMPLES, 2000, 2350.0, 0, 100), 100);  //1100
-  if (sum / INT_SAMPLES < 1200) batteryLevel = 0;
-  intVoltage = intVoltage * 4.20;
+  batteryLevel = map(intVoltage, 3.3, 4.1, 0, 100);
 }
 
 char* returndatetime() {

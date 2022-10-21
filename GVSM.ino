@@ -83,7 +83,7 @@ typedef struct {
 
 // ************* CONSTANTS ***************
 
-const float FACTOR = 5.5;          // reduction factor of the External Voltage Sensor
+const float FACTOR = 5.5f;          // reduction factor of the External Voltage Sensor
 const bool cellactive = false;     // Activate cell service
 const bool RESPOND = false;        // Respond to SMS
 const bool SERIALON = true;        // USB Serial enable
@@ -607,9 +607,11 @@ void gps_check() {
       serialprint((String)GPS.location.lng() + "\n\r"); 
     } 
   }
-  else if (GPS.date.isUpdated()) {
-      if (gps.Debug) serialprint((String)"DATE Fix Age: " + GPS.date.age() + "ms Raw: " + GPS.date.value() + " Year: " + GPS.date.year() + " Month: " + GPS.date.month() + " Day=" + GPS.date.day() + "\n\r"); 
-  }
+  //else if (GPS.date.isUpdated()) {
+  //  Serial.println("d");
+  //    rtc = RTC.now();
+  //    if (gps.Debug) serialprint((String)"DATE Fix Age: " + GPS.date.age() + "ms Raw: " + GPS.date.value() + " Year: " + GPS.date.year() + " Month: " + GPS.date.month() + " Day=" + GPS.date.day() + "\n\r"); 
+  //}
   else if (GPS.time.isUpdated()) {
     rtc = RTC.now();
     time_t gpsEpoch = gpsunixtime();
@@ -627,7 +629,7 @@ void gps_check() {
         rdt = returndatetime();
         strcpy(lastTimeAdjust, rdt);
         if (!eeprom.eeprom_write(16, (byte *)lastTimeAdjust, sizeof(lastTimeAdjust))) serialprint("Failed to store data in RTC EEPROM!");
-        if (debug && consoleUnlocked) serialprint((String)"RTC time adjusted to GPS: " + rtc.hour() + ":" + rtc.minute() + ":" + rtc.second() + " -> " + GPS.time.hour() + ":" + GPS.time.minute() + ":" + GPS.time.second() + "\n\r");
+        serialprint((String)"RTC time adjusted to GPS: " + rtc.hour() + ":" + rtc.minute() + ":" + rtc.second() + " -> " + GPS.time.hour() + ":" + GPS.time.minute() + ":" + GPS.time.second() + "\n\r");
       }
     }
     if (gps.Debug) serialprint((String)"TIME Fix Age: " + GPS.time.age() + "ms Raw: " + GPS.time.value() + " Hour: " + GPS.time.hour() + " Minute: " + GPS.time.minute() + " Second: " + GPS.time.second() + " Hundredths: " + GPS.time.centisecond() + "\n\r");
